@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Tourism Dashboard — Integration</title>
+  <!-- Tailwind via CDN for quick styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Leaflet for maps -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Chart.js for charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* small helpers */
+    #map { height: 420px; min-height: 280px; }
+    .card-scroll { max-height: 420px; overflow:auto; }
+    .no-select { -webkit-user-select:none; -ms-user-select:none; user-select:none; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased">
+  <div class="min-h-screen p-6">
+    <header class="mb-6 flex items-center justify-between">
+      <div>
+        <h1 class="text-2xl font-semibold">Tourism Dashboard</h1>
+        <p class="text-sm text-slate-500">Monitor destinations, bookings, and real-time map integration</p>
+      </div>
+      <div class="flex gap-3 items-center">
+        <button id="refreshBtn" class="px-4 py-2 bg-emerald-600 text-white rounded shadow hover:opacity-95">Refresh</button>
+        <button id="exportBtn" class="px-4 py-2 bg-sky-600 text-white rounded shadow hover:opacity-95">Export CSV</button>
+      </div>
+    </header>
+
+    <main class="grid grid-cols-12 gap-6">
+      <!-- Left column: filters & list -->
+      <section class="col-span-12 lg:col-span-4">
+        <div class="bg-white p-4 rounded-lg shadow">
+          <h2 class="font-medium">Filters</h2>
+          <div class="mt-3 space-y-3">
+            <input id="search" class="w-full border rounded px-3 py-2" placeholder="Search destination or state" />
+
+            <select id="typeFilter" class="w-full border rounded px-3 py-2">
+              <option value="">All types</option>
+              <option>Beach</option>
+              <option>Hill</option>
+              <option>Heritage</option>
+              <option>Wildlife</option>
+            </select>
+
+            <div class="flex items-center gap-2">
+              <label class="text-sm">Min visitors</label>
+              <input id="minVisitors" type="number" min="0" value="0" class="ml-auto w-24 border rounded px-2 py-1" />
+            </div>
+
+            <div class="flex gap-2">
+              <button id="applyFilters" class="flex-1 px-3 py-2 bg-indigo-600 text-white rounded">Apply</button>
+              <button id="resetFilters" class="flex-1 px-3 py-2 border rounded">Reset</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 bg-white p-4 rounded-lg shadow card-scroll">
+          <h3 class="font-medium mb-2">Destinations</h3>
+          <div id="destList" class="space-y-3">
+            <!-- dynamically filled cards -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Right column: map + charts -->
+      <section class="col-span-12 lg:col-span-8 space-y-6">
+        <div class="bg-white p-4 rounded-lg shadow">
+          <h3 class="font-medium">Map (Leaflet + OpenStreetMap)</h3>
+          <div id="map" class="mt-3 rounded"></div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="bg-white p-4 rounded-lg shadow">
+            <h3 class="font-medium">Visitors by Month</h3>
+            <canvas id="visitorsChart" class="mt-3"></canvas>
+          </div>
+
+          <div class="bg-white p-4 rounded-lg shadow">
+            <h3 class="font-medium">Top Destinations</h3>
+            <ol id="topList" class="mt-3 list-decimal pl-5 text-sm text-slate-700"></ol>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="mt-6 text-xs text-slate-500">Demo dashboard • Replace API endpoints in the script with your backend integrations.</footer>
+  </div>
+
+  <script>
+    /* ----------------------------- Sample data ----------------------------- */
+    // In production replace with fetch('/api/destinations') or your preferred endpoint.
+    const SAMPLE_DATA = [
+      { id:1, name:'Goa Beaches', state:'Goa', type:'Beach', lat:15.4964, lon:73.8278, visitorsMonthly:[1200,1300,1400,1600,2000,2500,2700,2400,2100,1800,1500,1300] },
+      { id:2, name:'Manali', state:'Himachal Pradesh', type:'Hill', lat:32.2432, lon:77.1892, visitorsMonthly:[800,700,900,1100,1300,2000,2200,2100,1600,1200,900,700] },
+      { id:3, name:'Jaipur Fort', state:'Rajasthan', type:'Heritage', lat:26.9124, lon:75.7873, visitorsMonthly:[600,700,900,1000,1100,1400,1500,1450,1200,900,800,700] },
+      { id:4, name:'Sundarbans', state:'West Bengal', type:'Wildlife', lat:21.9497, lon:88.9050, visitorsMonthly:[200,250,300,400,500,700,800,750,600,450,350,250] }
+    ];
+
+    /* ----------------------------- State & helpers ----------------------------- */
+    let data = SAMPLE_DATA.slice();
+    let map, markers = [];
+
+    function formatNumber(n){ return n.toLocaleString(); }
+
+    /* ----------------------------- Map setup ----------------------------- */
+    function initMap(){
+      map = L.map('map').setView([22.0, 79.0], 5); // center of India-ish
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+
+      updateMarkers();
+    }
+
+    function updateMarkers(){
+      // clear
+      markers.forEach(m => map.removeLayer(m));
+      markers = [];
+
+      data.forEach(dest => {
+        const marker = L.marker([dest.lat, dest.lon]).addTo(map);
+        marker.bindPopup(`<strong>${dest.name}</strong><br/>${dest.type} — ${dest.state}<br/>Avg monthly visitors: ${Math.round(avg(dest.visitorsMonthly))}`);
+        markers.push(marker);
+      });
+    }
+
+    /* ----------------------------- UI building ----------------------------- */
+    function buildDestinationCards(list){
+      const container = document.getElementById('destList');
+      container.innerHTML = '';
+      list.forEach(dest => {
+        const card = document.createElement('div');
+        card.className = 'border rounded p-3 bg-white flex items-start gap-3';
+        card.innerHTML = `
+          <div class="w-12 h-12 flex items-center justify-center rounded bg-slate-100 text-slate-600 no-select">${dest.type[0]}</div>
+          <div class="flex-1">
+            <div class="flex items-center justify-between">
+              <strong>${dest.name}</strong>
+              <span class="text-xs text-slate-500">${dest.state}</span>
+            </div>
+            <div class="text-sm text-slate-600 mt-1">Type: ${dest.type} • Avg: ${Math.round(avg(dest.visitorsMonthly))}</div>
+            <div class="mt-2 flex gap-2">
+              <button class="openBtn px-2 py-1 rounded border text-xs" data-id="${dest.id}">Open</button>
+              <button class="focusBtn px-2 py-1 rounded border text-xs" data-id="${dest.id}">Focus</button>
+            </div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+
+      // attach handlers
+      document.querySelectorAll('.openBtn').forEach(btn => btn.addEventListener('click', e => {
+        const id = +e.currentTarget.dataset.id; openDetails(id);
+      }));
+      document.querySelectorAll('.focusBtn').forEach(btn => btn.addEventListener('click', e => {
+        const id = +e.currentTarget.dataset.id; focusOn(id);
+      }));
+    }
+
+    function openDetails(id){
+      const dest = data.find(d => d.id===id);
+      if(!dest) return alert('Not found');
+      alert(`${dest.name} — ${dest.type}\nState: ${dest.state}\nAverage monthly visitors: ${Math.round(avg(dest.visitorsMonthly))}`);
+    }
+
+    function focusOn(id){
+      const dest = data.find(d => d.id===id);
+      if(!dest) return;
+      map.setView([dest.lat, dest.lon], 10, { animate:true });
+    }
+
+    /* ----------------------------- Charts ----------------------------- */
+    let visitorsChart;
+    function buildCharts(){
+      const ctx = document.getElementById('visitorsChart').getContext('2d');
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const totals = months.map((m,i) => data.reduce((s,d)=> s + (d.visitorsMonthly[i]||0), 0));
+
+      if(visitorsChart) visitorsChart.destroy();
+      visitorsChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: months, datasets: [{ label: 'Visitors (total)', data: totals, fill:true, tension:0.3 }] },
+        options: { responsive:true, plugins:{ legend:{ display:false } } }
+      });
+
+      buildTopList();
+    }
+
+    function buildTopList(){
+      const top = data.slice().sort((a,b)=> avg(b.visitorsMonthly)-avg(a.visitorsMonthly)).slice(0,5);
+      const ol = document.getElementById('topList'); ol.innerHTML='';
+      top.forEach((t,i)=>{
+        const li = document.createElement('li');
+        li.textContent = `${t.name} — ${formatNumber(Math.round(avg(t.visitorsMonthly)))} avg/month`;
+        ol.appendChild(li);
+      });
+    }
+
+    /* ----------------------------- Filtering & actions ----------------------------- */
+    function applyFilters(){
+      const q = document.getElementById('search').value.toLowerCase().trim();
+      const type = document.getElementById('typeFilter').value;
+      const minV = Number(document.getElementById('minVisitors').value)||0;
+
+      data = SAMPLE_DATA.filter(d => {
+        const matchesQ = !q || (d.name + ' ' + d.state).toLowerCase().includes(q);
+        const matchesType = !type || d.type===type;
+        const matchesMin = avg(d.visitorsMonthly) >= minV;
+        return matchesQ && matchesType && matchesMin;
+      });
+
+      buildDestinationCards(data);
+      updateMarkers();
+      buildCharts();
+    }
+
+    function resetFilters(){
+      document.getElementById('search').value='';
+      document.getElementById('typeFilter').value='';
+      document.getElementById('minVisitors').value='0';
+      data = SAMPLE_DATA.slice();
+      buildDestinationCards(data);
+      updateMarkers();
+      buildCharts();
+    }
+
+    document.getElementById('applyFilters')?.addEventListener('click', applyFilters);
+    document.getElementById('resetFilters')?.addEventListener('click', resetFilters);
+
+    document.getElementById('refreshBtn')?.addEventListener('click', ()=>{
+      // In production re-fetch from backend. This demo uses sample data.
+      // Example: fetch('/api/destinations').then(r=>r.json()).then(json=>{ SAMPLE_DATA = json; resetFilters(); })
+      resetFilters();
+    });
+
+    /* ----------------------------- CSV Export ----------------------------- */
+    function exportCSV(){
+      const rows = [ ['id','name','state','type','avg_monthly_visitors'] ];
+      data.forEach(d => rows.push([d.id, d.name, d.state, d.type, Math.round(avg(d.visitorsMonthly))]));
+      const csv = rows.map(r=> r.map(v=> '"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'destinations.csv'; a.click(); URL.revokeObjectURL(url);
+    }
+    document.getElementById('exportBtn')?.addEventListener('click', exportCSV);
+
+    /* ----------------------------- Utilities ----------------------------- */
+    function avg(arr){ return arr.reduce((s,x)=>s+(x||0),0)/arr.length; }
+
+    /* ----------------------------- Init ----------------------------- */
+    function init(){
+      // initial render
+      buildDestinationCards(data);
+      initMap();
+      buildCharts();
+
+      // wire search input to live filter (light-touch)
+      const searchEl = document.getElementById('search');
+      let tOut;
+      searchEl.addEventListener('input', ()=>{ clearTimeout(tOut); tOut = setTimeout(()=>applyFilters(), 450); });
+    }
+
+    // allow external integrations: example placeholder functions that a backend or 3rd-party integration can call
+    window.tourismIntegration = {
+      loadFromApi: async function(url){
+        try{
+          const res = await fetch(url);
+          if(!res.ok) throw new Error('Network error');
+          const json = await res.json();
+          // expected json = array of destinations like SAMPLE_DATA
+          data = json; // adopt
+          buildDestinationCards(data);
+          updateMarkers();
+          buildCharts();
+          return true;
+        }catch(err){ console.error('loadFromApi failed', err); return false; }
+      },
+      addDestination: function(dest){
+        // dest should contain id,name,state,type,lat,lon,visitorsMonthly
+        SAMPLE_DATA.push(dest); data = SAMPLE_DATA.slice();
+        buildDestinationCards(data); updateMarkers(); buildCharts();
+      }
+    };
+
+    init();
+  </script>
+</body>
+</html>
